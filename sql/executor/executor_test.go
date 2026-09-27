@@ -14,6 +14,7 @@ import (
 	"github.com/yourname/go-rdbms/storage/buffer"
 	"github.com/yourname/go-rdbms/storage/disk"
 	"github.com/yourname/go-rdbms/transaction"
+	"github.com/yourname/go-rdbms/transaction/lock"
 )
 
 type testDB struct {
@@ -42,8 +43,9 @@ func openDB(t *testing.T, dir string) (*testDB, *buffer.BufferPoolManager) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tm := transaction.NewTransactionManager()
-	return &testDB{t: t, cat: cat, exec: executor.New(cat), tm: tm}, bpm
+	lockMgr := lock.NewLockManager()
+	tm := transaction.NewTransactionManager(lockMgr)
+	return &testDB{t: t, cat: cat, exec: executor.New(cat, lockMgr), tm: tm}, bpm
 }
 
 // run はSQLを実行し、エラーならテストを失敗させる

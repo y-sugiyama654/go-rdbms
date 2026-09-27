@@ -8,6 +8,7 @@ import (
 	"github.com/yourname/go-rdbms/sql/parser"
 	"github.com/yourname/go-rdbms/sql/planner"
 	"github.com/yourname/go-rdbms/transaction"
+	"github.com/yourname/go-rdbms/transaction/lock"
 )
 
 // Result はSQL文の実行結果
@@ -22,17 +23,18 @@ type Result struct {
 type Executor struct {
 	catalog *catalog.Catalog
 	planner *planner.Planner
+	lockMgr *lock.LockManager
 }
 
-func New(cat *catalog.Catalog) *Executor {
-	return &Executor{catalog: cat, planner: planner.New(cat)}
+func New(cat *catalog.Catalog, lockMgr *lock.LockManager) *Executor {
+	return &Executor{catalog: cat, planner: planner.New(cat), lockMgr: lockMgr}
 }
 
 // Execute はトランザクションtxの中でSQL文を1つ実行する
 func (e *Executor) Execute(tx *transaction.Transaction, stmt parser.Statement) (*Result, error) {
 	switch s := stmt.(type) {
 	case *parser.SelectStatement:
-		return e.executeSelect(s)
+		return e.executeSelect(tx, s)
 	case *parser.InsertStatement:
 		return e.executeInsert(tx, s)
 	case *parser.CreateTableStatement:
@@ -44,7 +46,18 @@ func (e *Executor) Execute(tx *transaction.Transaction, stmt parser.Statement) (
 
 // ---- SELECT ----
 
-func (e *Executor) executeSelect(stmt *parser.SelectStatement) (*Result, error) {
+func (e *Executor) executeSelect(tx *transaction.Transaction, stmt *parser.SelectStatement) (*Result, error) {
+	// 読むテーブルすべてにSロックをかける（コミットまで保持する）
+	tables := []string{stmt.From}
+	for _, j := range stmt.Joins {
+		tables = append(tables, j.Table)
+	}
+	for _, name := range tables {
+		if err := e.lockMgr.Lock(tx.ID(), name, lock.Shared); err != nil {
+			return nil, err
+		}
+	}
+
 	plan, err := e.planner.PlanSelect(stmt)
 	if err != nil {
 		return nil, err
@@ -118,6 +131,10 @@ func (e *Executor) build(plan planner.Plan) (Operator, error) {
 func (e *Executor) executeInsert(tx *transaction.Transaction, stmt *parser.InsertStatement) (*Result, error) {
 	table, err := e.catalog.GetTable(stmt.Table)
 	if err != nil {
+		return nil, err
+	}
+	// 書き込むテーブルにXロックをかける（コミットまで保持する）
+	if err := e.lockMgr.Lock(tx.ID(), table.Name, lock.Exclusive); err != nil {
 		return nil, err
 	}
 	values, err := insertValues(stmt, table.Schema)

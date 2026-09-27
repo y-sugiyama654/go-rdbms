@@ -7,20 +7,23 @@ import (
 	"sync"
 
 	"github.com/yourname/go-rdbms/storage/btree"
+	"github.com/yourname/go-rdbms/transaction/lock"
 	"github.com/yourname/go-rdbms/transaction/txid"
 )
 
 // TransactionManager はトランザクションの開始・コミット・ロールバックを管理する
 type TransactionManager struct {
-	mu     sync.Mutex
-	nextID txid.TxID
-	active map[txid.TxID]*Transaction
+	mu      sync.Mutex
+	nextID  txid.TxID
+	active  map[txid.TxID]*Transaction
+	lockMgr *lock.LockManager
 }
 
-func NewTransactionManager() *TransactionManager {
+func NewTransactionManager(lockMgr *lock.LockManager) *TransactionManager {
 	return &TransactionManager{
-		nextID: 1,
-		active: make(map[txid.TxID]*Transaction),
+		nextID:  1,
+		active:  make(map[txid.TxID]*Transaction),
+		lockMgr: lockMgr,
 	}
 }
 
@@ -41,6 +44,9 @@ func (tm *TransactionManager) Commit(tx *Transaction) error {
 		return err
 	}
 	// 第12章でここにCOMMITログの書き込みとfsyncが入る
+
+	// 厳格2PL: ロックはトランザクションの終了時にまとめて解放する
+	tm.lockMgr.ReleaseAll(tx.id)
 	return nil
 }
 
@@ -63,7 +69,12 @@ func (tm *TransactionManager) Rollback(tx *Transaction) error {
 			return err
 		}
 	}
-	return tm.finish(tx, StatusAborted)
+	if err := tm.finish(tx, StatusAborted); err != nil {
+		return err
+	}
+	// 取り消しが終わるまではXロックを持ち続け、最後に解放する
+	tm.lockMgr.ReleaseAll(tx.id)
+	return nil
 }
 
 // finish はトランザクションを終了状態にして、実行中の一覧から外す

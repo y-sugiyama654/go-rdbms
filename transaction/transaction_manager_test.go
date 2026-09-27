@@ -2,8 +2,10 @@
 package transaction_test
 
 import (
+	"errors"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/yourname/go-rdbms/sql/catalog"
 	"github.com/yourname/go-rdbms/sql/executor"
@@ -11,6 +13,7 @@ import (
 	"github.com/yourname/go-rdbms/storage/buffer"
 	"github.com/yourname/go-rdbms/storage/disk"
 	"github.com/yourname/go-rdbms/transaction"
+	"github.com/yourname/go-rdbms/transaction/lock"
 )
 
 type env struct {
@@ -32,7 +35,12 @@ func setup(t *testing.T) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e := &env{t: t, tm: transaction.NewTransactionManager(), executor: executor.New(cat)}
+	lockMgr := lock.NewLockManager()
+	e := &env{
+		t:        t,
+		tm:       transaction.NewTransactionManager(lockMgr),
+		executor: executor.New(cat, lockMgr),
+	}
 
 	tx := e.tm.Begin()
 	e.exec(tx, "CREATE TABLE items (id INT PRIMARY KEY, name VARCHAR(10))")
@@ -106,21 +114,73 @@ func TestTransaction_Rollback(t *testing.T) {
 	e.tm.Commit(tx2)
 }
 
-func TestTransaction_DirtyReadWithoutLocks(t *testing.T) {
+func TestTransaction_NoDirtyRead(t *testing.T) {
 	e := setup(t)
+	tx := e.tm.Begin()
+	e.exec(tx, "CREATE TABLE accounts (id INT PRIMARY KEY, owner VARCHAR(10))")
+	e.tm.Commit(tx)
 
-	// TX1がINSERTしてまだコミットしていない
+	// TX1がINSERTしてまだコミットしていない（ITEMSのXロックを持っている）
 	tx1 := e.tm.Begin()
 	e.exec(tx1, "INSERT INTO items VALUES (1, 'apple')")
 
-	// TX2からTX1の未コミットの行が見えてしまう（ダーティリード）
-	if got := e.count(); got != 1 {
-		t.Fatalf("この時点ではロックがないので未コミットの行が見える: got %d", got)
+	// 別のトランザクションがITEMSを読もうとすると、TX1が終わるまで待たされる
+	done := make(chan int, 1)
+	go func() { done <- e.count() }()
+	select {
+	case n := <-done:
+		t.Fatalf("TX1の終了前に読めてしまった（%d件）", n)
+	case <-time.After(100 * time.Millisecond):
 	}
-	t.Log("ロックがないため、未コミットの行が他のトランザクションから見えた（第11章で解決する）")
 
+	// 関係ないテーブルは待たずに読める
+	tx3 := e.tm.Begin()
+	if _, err := e.exec(tx3, "SELECT * FROM accounts"); err != nil {
+		t.Fatal(err)
+	}
+	e.tm.Commit(tx3)
+
+	// TX1がロールバックすると、待っていた読み取りは「0件」を返す
 	e.tm.Rollback(tx1)
-	if got := e.count(); got != 0 {
-		t.Errorf("ロールバック後の件数: want 0, got %d", got)
+	select {
+	case n := <-done:
+		if n != 0 {
+			t.Errorf("ロールバックされた行が見えている: %d件", n)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("TX1の終了後も待たされている")
+	}
+}
+
+func TestTransaction_DeadlockVictimRollsBack(t *testing.T) {
+	e := setup(t)
+	tx := e.tm.Begin()
+	e.exec(tx, "CREATE TABLE accounts (id INT PRIMARY KEY, owner VARCHAR(10))")
+	e.tm.Commit(tx)
+
+	tx1, tx2 := e.tm.Begin(), e.tm.Begin()
+	e.exec(tx1, "SELECT * FROM items")    // TX1: ITEMS の S
+	e.exec(tx2, "SELECT * FROM accounts") // TX2: ACCOUNTS の S
+
+	// TX1 は ACCOUNTS に書こうとして TX2 を待つ
+	done := make(chan error, 1)
+	go func() {
+		_, err := e.exec(tx1, "INSERT INTO accounts VALUES (1, 'alice')")
+		done <- err
+	}()
+	time.Sleep(100 * time.Millisecond)
+
+	// TX2 が ITEMS に書こうとすると閉路ができ、TX2 の要求がデッドロックとして失敗する
+	_, err := e.exec(tx2, "INSERT INTO items VALUES (1, 'apple')")
+	if !errors.Is(err, lock.ErrDeadlock) {
+		t.Fatalf("デッドロックになるはず: got %v", err)
+	}
+	// デッドロックの犠牲になったTX2をロールバックすると、TX1が先へ進める
+	e.tm.Rollback(tx2)
+	if err := <-done; err != nil {
+		t.Fatalf("TX1のINSERTが失敗した: %v", err)
+	}
+	if err := e.tm.Commit(tx1); err != nil {
+		t.Fatal(err)
 	}
 }
