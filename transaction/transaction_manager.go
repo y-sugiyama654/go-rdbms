@@ -57,8 +57,12 @@ func (tm *TransactionManager) Commit(tx *Transaction) error {
 	}
 	// COMMITログをfsyncし終えた時点で、コミットが確定する（Durability）
 	lsn := tm.logMgr.Append(&log.LogRecord{TxID: tx.id, Type: log.RecordCommit})
-	if err := tm.logMgr.FlushTo(lsn); err != nil {
-		return fmt.Errorf("transaction: COMMITログを永続化できません: %w", err)
+	// 何も書き込んでいないトランザクションは、fsyncを待たなくてよい。
+	// COMMITログが失われても、取り消すべき変更がないので結果は変わらない
+	if len(tx.writes) > 0 {
+		if err := tm.logMgr.FlushTo(lsn); err != nil {
+			return fmt.Errorf("transaction: COMMITログを永続化できません: %w", err)
+		}
 	}
 	if err := tm.finish(tx, StatusCommitted); err != nil {
 		return err
