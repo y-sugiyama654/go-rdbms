@@ -156,6 +156,23 @@ func (bpm *BufferPoolManager) flushFrame(pageID page.PageID) error {
 	return nil
 }
 
+// FlushAllPages はダーティなページをすべてディスクに書き戻し、fsyncで永続化する
+// ピン中のページは他のゴルーチンが書き換えている最中かもしれないので対象外にする
+func (bpm *BufferPoolManager) FlushAllPages() error {
+	bpm.mu.Lock()
+	defer bpm.mu.Unlock()
+
+	for pageID, frameID := range bpm.pageTable {
+		if bpm.frames[frameID].pinCount > 0 {
+			continue
+		}
+		if err := bpm.flushFrame(pageID); err != nil {
+			return err
+		}
+	}
+	return bpm.diskManager.Sync()
+}
+
 // allocateFrame は空きフレームを確保する
 // 空きがなければreplacerに追い出しを依頼する
 func (bpm *BufferPoolManager) allocateFrame() (FrameID, error) {

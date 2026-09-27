@@ -3,7 +3,7 @@ package executor_test
 
 import (
 	"fmt"
-	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -23,22 +23,24 @@ type testDB struct {
 
 func setup(t *testing.T) *testDB {
 	t.Helper()
-	f, err := os.CreateTemp("", "test-exec-*.db")
+	db, _ := openDB(t, t.TempDir())
+	return db
+}
+
+// openDB はdir内のデータファイルとカタログファイルを開く
+func openDB(t *testing.T, dir string) (*testDB, *buffer.BufferPoolManager) {
+	t.Helper()
+	dm, err := disk.NewFileDiskManager(filepath.Join(dir, "test.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.Close()
-	dm, err := disk.NewFileDiskManager(f.Name())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		dm.Close()
-		os.Remove(f.Name())
-	})
+	t.Cleanup(func() { dm.Close() })
 	bpm := buffer.NewBufferPoolManager(dm, 64)
-	cat := catalog.NewCatalog(bpm)
-	return &testDB{t: t, cat: cat, exec: executor.New(cat)}
+	cat, err := catalog.NewCatalog(bpm, filepath.Join(dir, "catalog.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &testDB{t: t, cat: cat, exec: executor.New(cat)}, bpm
 }
 
 // run はSQLを実行し、エラーならテストを失敗させる
@@ -185,5 +187,28 @@ func TestPlanner_Explain(t *testing.T) {
 		"    IndexScan USERS [2, 2]\n"
 	if got := planner.Explain(plan); got != want {
 		t.Errorf("Explain不一致:\nwant:\n%s\ngot:\n%s", want, got)
+	}
+}
+
+func TestExecutor_Reopen(t *testing.T) {
+	dir := t.TempDir()
+
+	// 1回目: テーブルを作って1000行入れ、ページを書き出す
+	db, bpm := openDB(t, dir)
+	db.run("CREATE TABLE users (id INT PRIMARY KEY, name VARCHAR(20))")
+	for i := 1; i <= 1000; i++ {
+		db.run(fmt.Sprintf("INSERT INTO users VALUES (%d, 'user%d')", i, i))
+	}
+	if err := bpm.FlushAllPages(); err != nil {
+		t.Fatal(err)
+	}
+
+	// 2回目: 開き直してもSQLで同じデータが読める（インデックスも使える）
+	db2, _ := openDB(t, dir)
+	if got := rows(db2.run("SELECT name FROM users WHERE id = 777")); len(got) != 1 || got[0] != "user777" {
+		t.Errorf("再オープン後の検索結果が不正: %v", got)
+	}
+	if got := len(db2.run("SELECT * FROM users").Rows); got != 1000 {
+		t.Errorf("再オープン後の件数: want 1000, got %d", got)
 	}
 }

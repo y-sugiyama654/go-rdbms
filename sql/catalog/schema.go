@@ -1,6 +1,8 @@
 // sql/catalog/schema.go
 package catalog
 
+import "fmt"
+
 // DataType はカラムのデータ型
 type DataType int
 
@@ -16,17 +18,35 @@ func (t DataType) String() string {
 	return "VARCHAR"
 }
 
+// MarshalText はJSONに "INT" / "VARCHAR" という文字列で保存するためのメソッド
+func (t DataType) MarshalText() ([]byte, error) {
+	return []byte(t.String()), nil
+}
+
+// UnmarshalText はJSONの "INT" / "VARCHAR" をDataTypeに戻す
+func (t *DataType) UnmarshalText(b []byte) error {
+	switch string(b) {
+	case "INT":
+		*t = TypeInt
+	case "VARCHAR":
+		*t = TypeVarchar
+	default:
+		return fmt.Errorf("catalog: 未知の型です: %s", b)
+	}
+	return nil
+}
+
 // Column はカラムの定義
 type Column struct {
-	Name       string
-	Type       DataType
-	Length     int // VARCHARの最大文字数
-	PrimaryKey bool
+	Name       string   `json:"name"`
+	Type       DataType `json:"type"`
+	Length     int      `json:"length,omitempty"` // VARCHARの最大文字数
+	PrimaryKey bool     `json:"primary_key,omitempty"`
 }
 
 // Schema はテーブルのカラム定義の並び
 type Schema struct {
-	Columns []Column
+	Columns []Column `json:"columns"`
 }
 
 // PrimaryKeyIndex は主キーのカラム位置を返す（主キーがなければ-1）
