@@ -65,6 +65,19 @@ func (p *Page) SetNumSlots(n uint32) {
 	binary.BigEndian.PutUint32(p[offsetNumSlots:offsetNumSlots+4], n)
 }
 
+// ページLSNの位置（第5章のヒープページ・第6章のB+木ノードで予約しておいた8バイト）
+const offsetLSN = 16
+
+// GetLSN はこのページに最後に反映したWALレコードのLSNを返す
+func (p *Page) GetLSN() uint64 {
+	return binary.BigEndian.Uint64(p[offsetLSN : offsetLSN+8])
+}
+
+// SetLSN はページLSNを設定する
+func (p *Page) SetLSN(lsn uint64) {
+	binary.BigEndian.PutUint64(p[offsetLSN:offsetLSN+8], lsn)
+}
+
 // Data はヘッダを除いたデータ領域のスライスを返す
 func (p *Page) Data() []byte {
 	return p[HeaderSize:]

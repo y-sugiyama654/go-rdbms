@@ -15,6 +15,7 @@ import (
 	"github.com/yourname/go-rdbms/storage/disk"
 	"github.com/yourname/go-rdbms/transaction"
 	"github.com/yourname/go-rdbms/transaction/lock"
+	"github.com/yourname/go-rdbms/transaction/log"
 )
 
 type testDB struct {
@@ -43,8 +44,13 @@ func openDB(t *testing.T, dir string) (*testDB, *buffer.BufferPoolManager) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	logMgr, err := log.NewLogManager(filepath.Join(dir, "wal.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bpm.SetLogFlusher(func(lsn uint64) error { return logMgr.FlushTo(log.LSN(lsn)) })
 	lockMgr := lock.NewLockManager()
-	tm := transaction.NewTransactionManager(lockMgr)
+	tm := transaction.NewTransactionManager(lockMgr, logMgr)
 	return &testDB{t: t, cat: cat, exec: executor.New(cat, lockMgr), tm: tm}, bpm
 }
 

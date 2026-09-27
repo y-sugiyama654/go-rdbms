@@ -25,6 +25,7 @@ type BufferPoolManager struct {
 	pageTable   map[page.PageID]FrameID
 	freeList    []FrameID
 	replacer    Replacer
+	flushLog    func(lsn uint64) error // WAL: ページを書き出す前に呼ぶ（第12章）
 }
 
 // NewBufferPoolManager は指定サイズのフレームを持つBufferPoolManagerを返す
@@ -132,6 +133,25 @@ func (bpm *BufferPoolManager) UnpinPage(pageID page.PageID, isDirty bool) error 
 	return nil
 }
 
+// SetLogFlusher はページをディスクに書き出す前に呼ぶ関数を登録する
+// 「ページLSNまでのログがディスクにある」ことを保証するために使う（WALのルール）
+func (bpm *BufferPoolManager) SetLogFlusher(f func(lsn uint64) error) {
+	bpm.mu.Lock()
+	defer bpm.mu.Unlock()
+	bpm.flushLog = f
+}
+
+// writeBack はフレームの内容をディスクに書き出す
+// 先にページLSNまでのログをフラッシュしてから、ページを書く
+func (bpm *BufferPoolManager) writeBack(f *frame) error {
+	if bpm.flushLog != nil {
+		if err := bpm.flushLog(f.page.GetLSN()); err != nil {
+			return fmt.Errorf("buffer: ページ %d のログのフラッシュに失敗しました: %w", f.pageID, err)
+		}
+	}
+	return bpm.diskManager.WritePage(f.pageID, &f.page)
+}
+
 // FlushPage は指定ページをディスクに書き戻す
 func (bpm *BufferPoolManager) FlushPage(pageID page.PageID) error {
 	bpm.mu.Lock()
@@ -149,7 +169,7 @@ func (bpm *BufferPoolManager) flushFrame(pageID page.PageID) error {
 	if !f.isDirty {
 		return nil
 	}
-	if err := bpm.diskManager.WritePage(pageID, &f.page); err != nil {
+	if err := bpm.writeBack(f); err != nil {
 		return fmt.Errorf("buffer: ページ %d の書き戻しに失敗しました: %w", pageID, err)
 	}
 	f.isDirty = false
@@ -189,7 +209,7 @@ func (bpm *BufferPoolManager) allocateFrame() (FrameID, error) {
 
 	victim := &bpm.frames[victimID]
 	if victim.isDirty {
-		if err := bpm.diskManager.WritePage(victim.pageID, &victim.page); err != nil {
+		if err := bpm.writeBack(victim); err != nil {
 			// 書き戻せなかったページは追い出さず、追い出し候補に戻しておく
 			bpm.replacer.Unpin(victimID)
 			return 0, fmt.Errorf("buffer: 追い出し対象ページ %d の書き戻しに失敗しました: %w", victim.pageID, err)

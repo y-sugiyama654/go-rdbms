@@ -156,7 +156,7 @@ func (e *Executor) executeInsert(tx *transaction.Transaction, stmt *parser.Inser
 		}
 	}
 
-	rid, err := table.Heap.InsertRecord(data)
+	rid, err := table.Heap.InsertRecord(tx.Logger(), data)
 	if err != nil {
 		return nil, err
 	}
@@ -221,6 +221,42 @@ func insertValues(stmt *parser.InsertStatement, schema *catalog.Schema) ([]Value
 		}
 	}
 	return values, nil
+}
+
+// RebuildIndexes はヒープの内容から、すべてのテーブルの主キーインデックスを作り直す
+// インデックスの変更はWALに記録していないので、クラッシュからの復旧後に呼ぶ（第12章）
+func RebuildIndexes(cat *catalog.Catalog) error {
+	for _, name := range cat.ListTables() {
+		table, err := cat.GetTable(name)
+		if err != nil {
+			return err
+		}
+		pk := table.Schema.PrimaryKeyIndex()
+		if pk < 0 {
+			continue
+		}
+		if err := table.Index.Reset(); err != nil {
+			return err
+		}
+		scanner := table.Heap.Scan()
+		for {
+			rid, data, ok, err := scanner.Next()
+			if err != nil {
+				return err
+			}
+			if !ok {
+				break
+			}
+			values, err := DecodeTuple(data, table.Schema)
+			if err != nil {
+				return err
+			}
+			if err := table.Index.Insert(values[pk].Int, rid); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // ---- CREATE TABLE ----

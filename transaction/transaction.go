@@ -4,6 +4,7 @@ package transaction
 import (
 	"github.com/yourname/go-rdbms/sql/catalog"
 	"github.com/yourname/go-rdbms/storage/heap"
+	"github.com/yourname/go-rdbms/transaction/log"
 	"github.com/yourname/go-rdbms/transaction/txid"
 )
 
@@ -30,10 +31,14 @@ type Transaction struct {
 	id     txid.TxID
 	status Status
 	writes []WriteRecord
+	logger *log.TxLogger
 }
 
 func (tx *Transaction) ID() txid.TxID  { return tx.id }
 func (tx *Transaction) Status() Status { return tx.status }
+
+// Logger はこのトランザクションのヒープ操作をWALに記録するLoggerを返す
+func (tx *Transaction) Logger() heap.Logger { return tx.logger }
 
 // AddWrite は書き込み操作を記録する（ロールバック時に逆順で取り消す）
 func (tx *Transaction) AddWrite(w WriteRecord) {

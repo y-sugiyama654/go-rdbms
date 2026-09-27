@@ -14,6 +14,7 @@ import (
 	"github.com/yourname/go-rdbms/storage/disk"
 	"github.com/yourname/go-rdbms/transaction"
 	"github.com/yourname/go-rdbms/transaction/lock"
+	"github.com/yourname/go-rdbms/transaction/log"
 )
 
 type env struct {
@@ -35,10 +36,15 @@ func setup(t *testing.T) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
+	logMgr, err := log.NewLogManager(filepath.Join(dir, "wal.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bpm.SetLogFlusher(func(lsn uint64) error { return logMgr.FlushTo(log.LSN(lsn)) })
 	lockMgr := lock.NewLockManager()
 	e := &env{
 		t:        t,
-		tm:       transaction.NewTransactionManager(lockMgr),
+		tm:       transaction.NewTransactionManager(lockMgr, logMgr),
 		executor: executor.New(cat, lockMgr),
 	}
 

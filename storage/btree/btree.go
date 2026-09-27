@@ -304,6 +304,20 @@ func (t *BPlusTree) Delete(key int64) error {
 	return t.bpm.UnpinPage(leafID, true)
 }
 
+// Reset はルートを空の葉ノードに戻して、木を空にする（第12章のインデックス再構築で使う）
+// 古いノードのページは解放せずにそのまま残る（空きページの管理は実装していない）
+func (t *BPlusTree) Reset() error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	p, err := t.bpm.FetchPage(t.rootPageID)
+	if err != nil {
+		return err
+	}
+	node{p}.initLeaf()
+	return t.bpm.UnpinPage(t.rootPageID, true)
+}
+
 // Height は木の高さ（ルートから葉までのノード数）を返す
 func (t *BPlusTree) Height() (int, error) {
 	t.mu.RLock()

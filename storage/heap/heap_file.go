@@ -10,6 +10,14 @@ import (
 	"github.com/yourname/go-rdbms/storage/page"
 )
 
+// Logger はヒープへの変更をWALに記録する（第12章）
+// 各メソッドは書き込んだログレコードのLSNを返す
+type Logger interface {
+	LogInsert(rid RID, data []byte) uint64
+	LogDelete(rid RID) uint64
+	LogNewPage(prevPageID, newPageID page.PageID) uint64
+}
+
 // HeapFile は1つのテーブルのレコードを、連結されたスロット付きページの列として管理する
 type HeapFile struct {
 	mu          sync.Mutex
@@ -58,7 +66,8 @@ func (hf *HeapFile) FirstPageID() page.PageID {
 }
 
 // InsertRecord はレコードを格納してRIDを返す
-func (hf *HeapFile) InsertRecord(data []byte) (RID, error) {
+// lgがnilでなければ、変更をWALに記録してページLSNを更新する
+func (hf *HeapFile) InsertRecord(lg Logger, data []byte) (RID, error) {
 	if len(data) > page.MaxRecordSize {
 		return RID{}, fmt.Errorf("heap: レコードが大きすぎます（%dバイト、上限%dバイト）",
 			len(data), page.MaxRecordSize)
@@ -76,7 +85,11 @@ func (hf *HeapFile) InsertRecord(data []byte) (RID, error) {
 	sp := page.NewSlottedPage(p)
 	slotID, err := sp.InsertRecord(data)
 	if err == nil {
-		return RID{PageID: lastID, SlotID: slotID}, hf.bpm.UnpinPage(lastID, true)
+		rid := RID{PageID: lastID, SlotID: slotID}
+		if lg != nil {
+			p.SetLSN(lg.LogInsert(rid, data))
+		}
+		return rid, hf.bpm.UnpinPage(lastID, true)
 	}
 	if !errors.Is(err, page.ErrNoSpace) {
 		hf.bpm.UnpinPage(lastID, false)
@@ -92,6 +105,12 @@ func (hf *HeapFile) InsertRecord(data []byte) (RID, error) {
 	newSP := page.NewSlottedPage(newP)
 	newSP.Init()
 	sp.SetNextPageID(newID)
+	if lg != nil {
+		// ページの追加は、2つのページ（元の末尾と新しいページ）にまたがる変更
+		lsn := lg.LogNewPage(lastID, newID)
+		p.SetLSN(lsn)
+		newP.SetLSN(lsn)
+	}
 	if err := hf.bpm.UnpinPage(lastID, true); err != nil {
 		return RID{}, err
 	}
@@ -102,7 +121,11 @@ func (hf *HeapFile) InsertRecord(data []byte) (RID, error) {
 		hf.bpm.UnpinPage(newID, true)
 		return RID{}, err
 	}
-	return RID{PageID: newID, SlotID: slotID}, hf.bpm.UnpinPage(newID, true)
+	rid := RID{PageID: newID, SlotID: slotID}
+	if lg != nil {
+		newP.SetLSN(lg.LogInsert(rid, data))
+	}
+	return rid, hf.bpm.UnpinPage(newID, true)
 }
 
 // GetRecord はRIDのレコードを返す
@@ -119,19 +142,26 @@ func (hf *HeapFile) GetRecord(rid RID) ([]byte, error) {
 }
 
 // DeleteRecord はRIDのレコードを削除する
-func (hf *HeapFile) DeleteRecord(rid RID) error {
+func (hf *HeapFile) DeleteRecord(lg Logger, rid RID) error {
 	hf.mu.Lock()
 	defer hf.mu.Unlock()
+	return DeleteAt(hf.bpm, lg, rid)
+}
 
-	p, err := hf.bpm.FetchPage(rid.PageID)
+// DeleteAt はRIDのレコードを削除する（HeapFileを経由せずに使えるようにしたもの）
+func DeleteAt(bpm *buffer.BufferPoolManager, lg Logger, rid RID) error {
+	p, err := bpm.FetchPage(rid.PageID)
 	if err != nil {
 		return err
 	}
 	if err := page.NewSlottedPage(p).DeleteRecord(rid.SlotID); err != nil {
-		hf.bpm.UnpinPage(rid.PageID, false)
+		bpm.UnpinPage(rid.PageID, false)
 		return err
 	}
-	return hf.bpm.UnpinPage(rid.PageID, true)
+	if lg != nil {
+		p.SetLSN(lg.LogDelete(rid))
+	}
+	return bpm.UnpinPage(rid.PageID, true)
 }
 
 // Scan は全レコードを先頭から順に返すスキャナを作る

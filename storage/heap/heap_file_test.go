@@ -45,7 +45,7 @@ func TestHeapFile_InsertAndGet(t *testing.T) {
 	defer cleanup()
 
 	data := []byte("hello, heap file!")
-	rid, err := hf.InsertRecord(data)
+	rid, err := hf.InsertRecord(nil, data)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +67,7 @@ func TestHeapFile_ScanAcrossPages(t *testing.T) {
 	const n = 1000
 	for i := 0; i < n; i++ {
 		rec := []byte(fmt.Sprintf("record-%04d-%s", i, bytes.Repeat([]byte("x"), 80)))
-		if _, err := hf.InsertRecord(rec); err != nil {
+		if _, err := hf.InsertRecord(nil, rec); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -102,10 +102,10 @@ func TestHeapFile_Delete(t *testing.T) {
 	hf, _, cleanup := setupHeapFile(t, 10)
 	defer cleanup()
 
-	rid1, _ := hf.InsertRecord([]byte("Alice"))
-	rid2, _ := hf.InsertRecord([]byte("Bob"))
+	rid1, _ := hf.InsertRecord(nil, []byte("Alice"))
+	rid2, _ := hf.InsertRecord(nil, []byte("Bob"))
 
-	if err := hf.DeleteRecord(rid1); err != nil {
+	if err := hf.DeleteRecord(nil, rid1); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := hf.GetRecord(rid1); err == nil {
@@ -127,7 +127,7 @@ func TestHeapFile_Reopen(t *testing.T) {
 	defer cleanup()
 
 	for i := 0; i < 200; i++ {
-		if _, err := hf.InsertRecord(bytes.Repeat([]byte("y"), 100)); err != nil {
+		if _, err := hf.InsertRecord(nil, bytes.Repeat([]byte("y"), 100)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -137,7 +137,7 @@ func TestHeapFile_Reopen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rid, err := reopened.InsertRecord([]byte("after reopen"))
+	rid, err := reopened.InsertRecord(nil, []byte("after reopen"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,10 +150,10 @@ func TestHeapFile_TooLargeRecord(t *testing.T) {
 	hf, _, cleanup := setupHeapFile(t, 10)
 	defer cleanup()
 
-	if _, err := hf.InsertRecord(make([]byte, page.MaxRecordSize+1)); err == nil {
+	if _, err := hf.InsertRecord(nil, make([]byte, page.MaxRecordSize+1)); err == nil {
 		t.Error("1ページに収まらないレコードがエラーにならなかった")
 	}
-	if _, err := hf.InsertRecord(make([]byte, page.MaxRecordSize)); err != nil {
+	if _, err := hf.InsertRecord(nil, make([]byte, page.MaxRecordSize)); err != nil {
 		t.Errorf("上限ちょうどのレコードは格納できるはず: %v", err)
 	}
 }

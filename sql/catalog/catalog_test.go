@@ -86,7 +86,7 @@ func TestCatalog_Persistence(t *testing.T) {
 			t.Fatal(err)
 		}
 		for i := int64(1); i <= 300; i++ {
-			rid, err := info.Heap.InsertRecord([]byte(strings.Repeat("x", 50)))
+			rid, err := info.Heap.InsertRecord(nil, []byte(strings.Repeat("x", 50)))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -134,7 +134,7 @@ func TestCatalog_Persistence(t *testing.T) {
 	}
 
 	// 開き直した後も、ヒープの末尾に追記できる
-	if _, err := info.Heap.InsertRecord([]byte("after reopen")); err != nil {
+	if _, err := info.Heap.InsertRecord(nil, []byte("after reopen")); err != nil {
 		t.Fatal(err)
 	}
 }
