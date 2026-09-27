@@ -7,6 +7,7 @@ import (
 	"github.com/yourname/go-rdbms/sql/catalog"
 	"github.com/yourname/go-rdbms/sql/parser"
 	"github.com/yourname/go-rdbms/sql/planner"
+	"github.com/yourname/go-rdbms/transaction"
 )
 
 // Result はSQL文の実行結果
@@ -27,13 +28,13 @@ func New(cat *catalog.Catalog) *Executor {
 	return &Executor{catalog: cat, planner: planner.New(cat)}
 }
 
-// Execute はSQL文を1つ実行する
-func (e *Executor) Execute(stmt parser.Statement) (*Result, error) {
+// Execute はトランザクションtxの中でSQL文を1つ実行する
+func (e *Executor) Execute(tx *transaction.Transaction, stmt parser.Statement) (*Result, error) {
 	switch s := stmt.(type) {
 	case *parser.SelectStatement:
 		return e.executeSelect(s)
 	case *parser.InsertStatement:
-		return e.executeInsert(s)
+		return e.executeInsert(tx, s)
 	case *parser.CreateTableStatement:
 		return e.executeCreateTable(s)
 	default:
@@ -114,7 +115,7 @@ func (e *Executor) build(plan planner.Plan) (Operator, error) {
 
 // ---- INSERT ----
 
-func (e *Executor) executeInsert(stmt *parser.InsertStatement) (*Result, error) {
+func (e *Executor) executeInsert(tx *transaction.Transaction, stmt *parser.InsertStatement) (*Result, error) {
 	table, err := e.catalog.GetTable(stmt.Table)
 	if err != nil {
 		return nil, err
@@ -142,6 +143,13 @@ func (e *Executor) executeInsert(stmt *parser.InsertStatement) (*Result, error) 
 	if err != nil {
 		return nil, err
 	}
+	// ロールバックに備えて、インデックスを更新する前に書き込みを記録しておく
+	w := transaction.WriteRecord{Table: table, RID: rid}
+	if pk >= 0 {
+		w.Key, w.HasKey = values[pk].Int, true
+	}
+	tx.AddWrite(w)
+
 	if pk >= 0 {
 		if err := table.Index.Insert(values[pk].Int, rid); err != nil {
 			return nil, err

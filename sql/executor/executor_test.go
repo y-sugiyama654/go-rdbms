@@ -13,12 +13,14 @@ import (
 	"github.com/yourname/go-rdbms/sql/planner"
 	"github.com/yourname/go-rdbms/storage/buffer"
 	"github.com/yourname/go-rdbms/storage/disk"
+	"github.com/yourname/go-rdbms/transaction"
 )
 
 type testDB struct {
 	t    *testing.T
 	cat  *catalog.Catalog
 	exec *executor.Executor
+	tm   *transaction.TransactionManager
 }
 
 func setup(t *testing.T) *testDB {
@@ -40,7 +42,8 @@ func openDB(t *testing.T, dir string) (*testDB, *buffer.BufferPoolManager) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &testDB{t: t, cat: cat, exec: executor.New(cat)}, bpm
+	tm := transaction.NewTransactionManager()
+	return &testDB{t: t, cat: cat, exec: executor.New(cat), tm: tm}, bpm
 }
 
 // run はSQLを実行し、エラーならテストを失敗させる
@@ -53,12 +56,19 @@ func (db *testDB) run(sql string) *executor.Result {
 	return res
 }
 
+// try はSQLを1文だけのトランザクションとして実行する（成功したらコミット、失敗したらロールバック）
 func (db *testDB) try(sql string) (*executor.Result, error) {
 	stmt, err := parser.Parse(sql)
 	if err != nil {
 		return nil, err
 	}
-	return db.exec.Execute(stmt)
+	tx := db.tm.Begin()
+	res, err := db.exec.Execute(tx, stmt)
+	if err != nil {
+		db.tm.Rollback(tx)
+		return nil, err
+	}
+	return res, db.tm.Commit(tx)
 }
 
 // rows は結果を "1,Alice" のような文字列の並びにする
