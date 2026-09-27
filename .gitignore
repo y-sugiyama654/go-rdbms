@@ -1,0 +1,14 @@
+# ビルドしたCLI
+/go-rdbms
+
+# 実行時に作られるデータ
+/go-rdbms-data/
+*.db
+*.tmp
+wal.log
+catalog.json
+
+# テスト・プロファイルの生成物
+*.test
+*.out
+*.prof
